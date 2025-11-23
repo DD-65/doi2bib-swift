@@ -1,17 +1,13 @@
-//
-//  HelloMacApp.swift
-//  HelloMac
-//
-//  Created by Daniel on 21.11.25.
-//
-
 import SwiftUI
 
 @main
-struct HelloMacApp: App {
+struct ClipboardMenuBarApp: App {
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra("BibTeX", systemImage: "doc.text") {
+            BibtexView()
+                .frame(width: 340, height: 190)
+                .padding()
         }
+        .menuBarExtraStyle(.window) // window-like popover from the menu bar icon
     }
 }
