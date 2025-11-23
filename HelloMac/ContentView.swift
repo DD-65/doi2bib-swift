@@ -1,3 +1,5 @@
+// MARK: older copy paste test menu bar app
+
 import SwiftUI
 import AppKit   // Needed for NSPasteboard on macOS
 
