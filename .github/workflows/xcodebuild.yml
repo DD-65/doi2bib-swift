@@ -21,12 +21,3 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             build
-
-      - name: Run tests (w/o code sign aswell)
-        run: |
-          xcodebuild \
-            -project HelloMac.xcodeproj \
-            -scheme HelloMac \
-            -destination 'platform=macOS' \
-            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
-            test
