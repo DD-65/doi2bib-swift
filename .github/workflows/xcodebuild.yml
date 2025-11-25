@@ -18,6 +18,14 @@ jobs:
           xcodebuild \
             -project HelloMac.xcodeproj \
             -scheme HelloMac \
+            -configuration Release \
             -destination 'platform=macOS' \
+            -derivedDataPath build \
             CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             build
+
+      - name: Upload built app
+        uses: actions/upload-artifact@v4
+        with:
+          name: doi2bib.app
+          path: build/Build/Products/Release/HelloMac.app
