@@ -2,12 +2,10 @@
 //  BibtexView.swift
 //  HelloMac
 //
-//  Created by Daniel on 23.11.25.
-//
-
 
 import SwiftUI
 import AppKit
+import Foundation
 
 struct BibtexView: View {
     @State private var identifier: String = ""
@@ -35,10 +33,10 @@ struct BibtexView: View {
             Text("BibTeX from ID")
                 .font(.headline)
 
-            Text("Enter DOI, PMCID/PMID, or arXiv ID:")
+            Text("Enter DOI, PMCID/PMID, arXiv ID, or a full reference:")
                 .font(.subheadline)
 
-            TextField("e.g. 10.1038/nphys1170, PMC1234567, 2101.00001", text: $identifier)
+            TextField("e.g. 10.1038/nphys1170, PMC1234567, 2101.00001, ...", text: $identifier)
                 .textFieldStyle(.roundedBorder)
 
             HStack {
@@ -67,7 +65,7 @@ struct BibtexView: View {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(6)
             }
 
             Spacer()
@@ -89,12 +87,59 @@ struct BibtexView: View {
         copied = false
 
         do {
+            // First: try “direct ID” pipeline (DOI / PMID / PMCID / arXiv)
             let bibtex = try await fetchBibtex(for: id)
-            copyToClipboard(prettyFormatBibtex(bibtex))
-            status = "Copied BibTeX to clipboard ✅"
+            let formatted = formatBibtexForClipboard(bibtex)
+            copyToClipboard(formatted)
+            status = "Copied BibTeX to clipboard"
             copied = true
         } catch let error as CitationError {
-            status = error.errorDescription
+            switch error {
+            case .unknownIdentifier:
+                // Fallback 1: CrossRef search using the whole string as a query
+                do {
+                    let hit = try await searchCrossrefForDOI(query: id)
+                    let bibtex = try await fetchBibtexFromDOI(hit.doi)
+                    let formatted = formatBibtexForClipboard(bibtex)
+                    copyToClipboard(formatted)
+
+                    if let title = hit.title, let year = hit.year {
+                        status = """
+                        Copied BibTeX (resolved via CrossRef search: “\(title)” \(year); may not be exact!)
+                        """
+                    } else {
+                        status = "Copied BibTeX (resolved via CrossRef search; may not be exact!)"
+                    }
+
+                    copied = true
+                } catch {
+                    // Fallback 2: heuristic DOI extraction from the text (Algo 2-style)
+                    if let doi = extractDOIFromFreeText(id) {
+                        do {
+                            let bibtex = try await fetchBibtexFromDOI(doi)
+                            let formatted = formatBibtexForClipboard(bibtex)
+                            copyToClipboard(formatted)
+                            status = """
+                            Copied BibTeX (DOI heuristically extracted from text: \(doi); please double-check!!)
+                            """
+                            copied = true
+                        } catch {
+                            status = """
+                            Tried CrossRef search and heuristic DOI extraction but couldn’t fetch a valid BibTeX entry.
+                            (\(error.localizedDescription))
+                            """
+                        }
+                    } else {
+                        status = """
+                        Couldn’t recognize this as a DOI, PMCID/PMID, or arXiv ID,
+                        and CrossRef search / DOI extraction didn’t find anything.
+                        """
+                    }
+                }
+
+            default:
+                status = error.errorDescription
+            }
         } catch {
             status = "Unexpected error: \(error.localizedDescription)"
         }
@@ -114,9 +159,16 @@ private func copyToClipboard(_ string: String) {
 // MARK: - Helpers & models
 
 private enum IdentifierType {
-    case doi
-    case pmidOrPmc
-    case arxiv
+    case doi(String)
+    case pmidOrPmc(String)
+    case arxiv(String)
+}
+
+// Wrap pretty-formatting + LaTeX accent escaping in one place
+private func formatBibtexForClipboard(_ raw: String) -> String {
+    let pretty = prettyFormatBibtex(raw)
+    let escaped = replaceLatexAccents(pretty)
+    return escaped
 }
 
 private func prettyFormatBibtex(_ raw: String) -> String {
@@ -163,7 +215,6 @@ private func prettyFormatBibtex(_ raw: String) -> String {
     var output = "\(header)\n"
 
     for field in fields {
-        // e.g. "title={Measured measurement}"
         if field.isEmpty { continue }
         output += "  \(field),\n"
     }
@@ -171,6 +222,70 @@ private func prettyFormatBibtex(_ raw: String) -> String {
     output += "}"
 
     return output
+}
+
+// MARK: - LaTeX accent replacement (Unicode → LaTeX macros)
+
+/// A conservative subset of the Python latexAccents map.
+/// We avoid touching backslashes / braces, since the BibTeX may already contain TeX macros.
+private let latexAccents: [Character: String] = [
+    // Grave
+    "à": "\\`a", "è": "\\`e", "ì": "\\`\\i{}", "ò": "\\`o", "ù": "\\`u", "ỳ": "\\`y",
+    "À": "\\`A", "È": "\\`E", "Ì": "\\`I", "Ò": "\\`O", "Ù": "\\`U", "Ỳ": "\\`Y",
+
+    // Acute
+    "á": "\\'a", "ć": "\\'c", "é": "\\'e", "í": "\\'\\i{}", "ó": "\\'o", "ú": "\\'u", "ý": "\\'y",
+    "Á": "\\'A", "É": "\\'E", "Í": "\\'I", "Ó": "\\'O", "Ú": "\\'U", "Ý": "\\'Y",
+
+    // Circumflex
+    "â": "\\^a", "ê": "\\^e", "î": "\\^\\i{}", "ô": "\\^o", "û": "\\^u", "ŷ": "\\^y",
+    "Â": "\\^A", "Ê": "\\^E", "Î": "\\^I", "Ô": "\\^O", "Û": "\\^U", "Ŷ": "\\^Y",
+
+    // Umlaut / dieresis
+    "ä": "\\\"a", "ë": "\\\"e", "ï": "\\\"\\i{}", "ö": "\\\"o", "ü": "\\\"u", "ÿ": "\\\"y",
+    "Ä": "\\\"A", "Ë": "\\\"E", "Ï": "\\\"I", "Ö": "\\\"O", "Ü": "\\\"U", "Ÿ": "\\\"Y",
+
+    // Tilde / misc
+    "ã": "\\~a", "ñ": "\\~n",
+    "ç": "\\c{c}", "Ç": "\\c{C}",
+    "œ": "{\\oe}", "Œ": "{\\OE}",
+    "æ": "{\\ae}", "Æ": "{\\AE}",
+    "å": "{\\aa}", "Å": "{\\AA}",
+    "ø": "{\\o}",  "Ø": "{\\O}",
+    "ß": "{\\ss}",
+
+    // Dashes
+    "–": "--", "—": "---", "−": "--",
+
+    // Common typographic quotes
+    "‘": "`",  "’": "'",  "“": "``", "”": "''",
+    "‚": ",", "„": ",,",
+
+    // Some Greek letters (math mode)
+    "α": "$\\alpha$", "β": "$\\beta$", "γ": "$\\gamma$", "δ": "$\\delta$",
+    "ε": "$\\epsilon$", "η": "$\\eta$", "θ": "$\\theta$", "λ": "$\\lambda$",
+    "µ": "$\\mu$", "ν": "$\\nu$", "π": "$\\pi$", "σ": "$\\sigma$",
+    "τ": "$\\tau$", "φ": "$\\phi$", "χ": "$\\chi$", "ψ": "$\\psi$", "ω": "$\\omega$",
+
+    // Misc
+    "°": "$^\\circ$",
+    "\u{00A0}": " " // non-breaking space → normal space
+]
+
+private func replaceLatexAccents(_ string: String) -> String {
+    let normalized = string.precomposedStringWithCanonicalMapping
+    var result = ""
+    result.reserveCapacity(normalized.count)
+
+    for ch in normalized {
+        if let replacement = latexAccents[ch] {
+            result.append(replacement)
+        } else {
+            result.append(ch)
+        }
+    }
+
+    return result
 }
 
 private enum CitationError: LocalizedError {
@@ -206,27 +321,88 @@ private extension String {
     }
 }
 
-// MARK: - ID classification (mirrors your Node logic)
+// MARK: - ID normalization & classification
+
+/// Normalize DOI-like input: strip URL/prefix if present (https://doi.org/, dx.doi.org, doi:, etc.).
+private func normalizeDOIPrefix(_ value: String) -> String {
+    let trimmed = value.trimmed
+    let lower = trimmed.lowercased()
+
+    let prefixes = [
+        "https://doi.org/",
+        "http://doi.org/",
+        "doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+        "dx.doi.org/",
+        "doi:"
+    ]
+
+    for prefix in prefixes {
+        if lower.hasPrefix(prefix) {
+            let index = trimmed.index(trimmed.startIndex, offsetBy: prefix.count)
+            return String(trimmed[index...]).trimmed
+        }
+    }
+
+    return trimmed
+}
+
+private func normalizePMIDorPMCID(_ value: String) -> String {
+    let trimmed = value.trimmed
+    let lower = trimmed.lowercased()
+
+    if lower.hasPrefix("pmid:") {
+        let idx = trimmed.index(trimmed.startIndex, offsetBy: 5)
+        return String(trimmed[idx...]).trimmed
+    }
+
+    if lower.hasPrefix("pmcid:") {
+        let idx = trimmed.index(trimmed.startIndex, offsetBy: 6)
+        return String(trimmed[idx...]).trimmed
+    }
+
+    return trimmed
+}
+
+private func normalizeArxivID(_ value: String) -> String {
+    let trimmed = value.trimmed
+    let lower = trimmed.lowercased()
+
+    if lower.hasPrefix("arxiv:") {
+        let idx = trimmed.index(trimmed.startIndex, offsetBy: 6)
+        return String(trimmed[idx...]).trimmed
+    }
+
+    return trimmed
+}
 
 private func detectIdentifierType(for id: String) -> IdentifierType? {
     let trimmed = id.trimmed
 
-    // Same patterns used in your Node server:
-    // DOI:   ^10\..+/.+$
-    // PMID:  ^\d+$|^PMC\d+(\.\d+)?$
-    // arXiv: ^\d+\.\d+(v(\d+))?$
-    // 
-
-    if trimmed.range(of: #"^10\..+/.+$"#, options: .regularExpression) != nil {
-        return .doi
+    // DOI (with URL/prefix normalization)
+    let normalizedDOI = normalizeDOIPrefix(trimmed)
+    if normalizedDOI.range(of: #"^10\..+/.+$"#, options: .regularExpression) != nil {
+        return .doi(normalizedDOI)
     }
 
-    if trimmed.range(of: #"^\d+$|^PMC\d+(\.\d+)?$"#, options: .regularExpression) != nil {
-        return .pmidOrPmc
+    // PMID / PMCID (with optional prefixes)
+    let normalizedPM = normalizePMIDorPMCID(trimmed)
+    if normalizedPM.range(of: #"^\d+$|^PMC\d+(\.\d+)?$"#, options: .regularExpression) != nil {
+        return .pmidOrPmc(normalizedPM)
     }
 
-    if trimmed.range(of: #"^\d+\.\d+(v(\d+))?$"#, options: .regularExpression) != nil {
-        return .arxiv
+    // arXiv (new-style and old-style, with optional "arXiv:" prefix)
+    let normalizedArxiv = normalizeArxivID(trimmed)
+
+    // New style, e.g. 2101.00001 or 2101.00001v2
+    if normalizedArxiv.range(of: #"^\d{4}\.\d{4,5}(v\d+)?$"#, options: .regularExpression) != nil {
+        return .arxiv(normalizedArxiv)
+    }
+
+    // Old style, e.g. hep-th/0501234 or cond-mat/0601001
+    if normalizedArxiv.range(of: #"^[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$"#, options: .regularExpression) != nil {
+        return .arxiv(normalizedArxiv)
     }
 
     return nil
@@ -234,24 +410,30 @@ private func detectIdentifierType(for id: String) -> IdentifierType? {
 
 // MARK: - Networking
 
+/// Main resolver: ID → (maybe) DOI → BibTeX via doi.org
 private func fetchBibtex(for id: String) async throws -> String {
-    guard let kind = detectIdentifierType(for: id) else {
+    let trimmed = id.trimmed
+    guard !trimmed.isEmpty else {
+        throw CitationError.unknownIdentifier
+    }
+
+    guard let kind = detectIdentifierType(for: trimmed) else {
         throw CitationError.unknownIdentifier
     }
 
     switch kind {
-    case .doi:
-        return try await fetchBibtexFromDOI(id)
-    case .pmidOrPmc:
-        let doi = try await fetchDOIFromPMIDorPMCID(id)
+    case .doi(let doi):
         return try await fetchBibtexFromDOI(doi)
-    case .arxiv:
-        let doi = try await fetchDOIFromArxiv(id)
+    case .pmidOrPmc(let pmidOrPmc):
+        let doi = try await fetchDOIFromPMIDorPMCID(pmidOrPmc)
+        return try await fetchBibtexFromDOI(doi)
+    case .arxiv(let arxivId):
+        let doi = try await fetchDOIFromArxiv(arxivId)
         return try await fetchBibtexFromDOI(doi)
     }
 }
 
-// --- DOI → BibTeX (like doi2bib.doi2bib in your Node code) ---
+// --- DOI → BibTeX ---
 
 private func fetchBibtexFromDOI(_ doi: String) async throws -> String {
     guard
@@ -282,7 +464,7 @@ private func fetchBibtexFromDOI(_ doi: String) async throws -> String {
     }
 }
 
-// --- PMID / PMCID → DOI (like pmid2doi in your Node code) ---
+// --- PMID / PMCID → DOI ---
 
 private struct IdConvResponse: Decodable {
     struct Record: Decodable {
@@ -321,7 +503,7 @@ private func fetchDOIFromPMIDorPMCID(_ id: String) async throws -> String {
     return doi
 }
 
-// --- arXiv → DOI (like arxivid2doi in your Node code) ---
+// --- arXiv → DOI ---
 
 private func fetchDOIFromArxiv(_ arxivId: String) async throws -> String {
     let trimmed = arxivId.trimmed
@@ -359,4 +541,63 @@ private func fetchDOIFromArxiv(_ arxivId: String) async throws -> String {
     }
 
     return doi
+}
+
+// MARK: - CrossRef search fallback (Algo 3-style)
+
+private struct CrossrefSearchHit: Decodable {
+    let doi: String
+    let title: String?
+    let year: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case doi
+        case title
+        case year
+    }
+}
+
+private func searchCrossrefForDOI(query: String) async throws -> CrossrefSearchHit {
+    guard
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+        let url = URL(string: "https://search.crossref.org/dois?q=\(encoded)&sort=score")
+    else {
+        throw CitationError.invalidResponse
+    }
+
+    let (data, response) = try await URLSession.shared.data(from: url)
+    guard let http = response as? HTTPURLResponse else {
+        throw CitationError.invalidResponse
+    }
+
+    guard http.statusCode == 200 else {
+        throw CitationError.networkError(http.statusCode)
+    }
+
+    let hits = try JSONDecoder().decode([CrossrefSearchHit].self, from: data)
+    guard let first = hits.first else {
+        throw CitationError.notFound
+    }
+
+    return first
+}
+
+// MARK: - Final heuristic DOI extraction fallback
+
+/// Extract the first plausible DOI from arbitrary text (e.g. a full reference line),
+/// using a simple "find 10.xxxx/..." heuristic.
+private func extractDOIFromFreeText(_ text: String) -> String? {
+    // Look for something that looks like a DOI.
+    // Very rough: start with "10." and continue until a whitespace.
+    guard let range = text.range(of: #"10\.\d{4,9}/\S+"#, options: .regularExpression) else {
+        return nil
+    }
+
+    var candidate = String(text[range])
+
+    // Trim trailing punctuation / brackets often attached to DOIs in text.
+    let trailingChars = CharacterSet(charactersIn: ".,;:)]}>\"'")
+    candidate = candidate.trimmingCharacters(in: trailingChars)
+
+    return candidate.isEmpty ? nil : candidate
 }
