@@ -1,0 +1,22 @@
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project HelloMac.xcodeproj \
+            -scheme HelloMac \
+            -destination 'platform=macOS' \
+            build
+
+      - name: Run tests
+        run: |
+          xcodebuild \
+            -project HelloMac.xcodeproj \
+            -scheme HelloMac \
+            -destination 'platform=macOS' \
+            test
