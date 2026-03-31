@@ -7,7 +7,7 @@ A macOS menu bar app to quickly fetch and copy BibTeX citations from a DOI, PMID
 1.  Click the app icon in your menu bar
 2.  Paste a DOI, PMID, PMCID, arXiv ID, or a full reference into the text field
 3.  Press Enter or click the "Copy BibTeX" button
-4.  The BibTeX citation will be automatically copied to your clipboard
+4.  The BibTeX citation will be automatically copied to your clipboard (if one is found)
 
 ## Features
 
